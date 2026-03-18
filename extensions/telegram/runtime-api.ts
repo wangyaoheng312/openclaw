@@ -47,16 +47,27 @@ export {
 } from "../../src/channels/account-snapshot-fields.js";
 export { resolveTelegramPollVisibility } from "../../src/poll-params.js";
 export { PAIRING_APPROVED_MESSAGE } from "../../src/channels/plugins/pairing-message.js";
-export type { TelegramProbe } from "./src/probe.js";
+export { auditTelegramGroupMembership, collectTelegramUnmentionedGroupIds } from "./src/audit.js";
+export { monitorTelegramProvider } from "./src/monitor.js";
+export { probeTelegram, type TelegramProbe } from "./src/probe.js";
 export {
   createForumTopicTelegram,
   deleteMessageTelegram,
+  editMessageReplyMarkupTelegram,
   editForumTopicTelegram,
   editMessageTelegram,
+  pinMessageTelegram,
   reactMessageTelegram,
+  renameForumTopicTelegram,
   sendMessageTelegram,
   sendPollTelegram,
   sendStickerTelegram,
+  sendTypingTelegram,
+  unpinMessageTelegram,
 } from "./src/send.js";
+export {
+  setTelegramThreadBindingIdleTimeoutBySessionKey,
+  setTelegramThreadBindingMaxAgeBySessionKey,
+} from "./src/thread-bindings.js";
 export { resolveTelegramToken } from "./src/token.js";
 export { telegramMessageActions } from "./src/channel-actions.js";
