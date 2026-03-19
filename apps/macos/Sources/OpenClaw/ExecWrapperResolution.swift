@@ -79,6 +79,15 @@ enum ExecWrapperResolution {
 
     private static let shellMultiplexerWrapperNames = Set(["busybox", "toybox"])
     private static let transparentDispatchWrappers = Set(["nice", "nohup", "stdbuf", "timeout"])
+    private static let shellWrapperOptionsWithValue = Set([
+        "-c",
+        "--command",
+        "-o",
+        "+o",
+        "--rcfile",
+        "--init-file",
+        "--startup-file",
+    ])
     private static let niceOptionsWithValue = Set(["-n", "--adjustment", "--priority"])
     private static let stdbufOptionsWithValue = Set(["-i", "--input", "-o", "--output", "-e", "--error"])
     private static let timeoutFlagOptions = Set(["--foreground", "--preserve-status", "-v", "--verbose"])
@@ -285,6 +294,43 @@ enum ExecWrapperResolution {
         return current
     }
 
+    static func resolveShellWrapperScriptCandidatePath(_ argv: [String], cwd: String?) -> String? {
+        let effective = self.unwrapShellInspectionArgv(argv)
+        guard let token0 = self.trimmedNonEmpty(effective.first) else {
+            return nil
+        }
+
+        let normalized = self.normalizeExecutableToken(token0)
+        guard let spec = self.findShellWrapperSpec(normalized) else {
+            return nil
+        }
+        guard self.extractShellWrapperPayload(effective, spec: spec) == nil else {
+            return nil
+        }
+        guard let scriptIndex = self.findShellWrapperScriptTokenIndex(effective) else {
+            return nil
+        }
+
+        let scriptToken = effective[scriptIndex].trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !scriptToken.isEmpty else {
+            return nil
+        }
+
+        let expanded = scriptToken.hasPrefix("~")
+            ? (scriptToken as NSString).expandingTildeInPath
+            : scriptToken
+        if expanded.hasPrefix("/") {
+            return expanded
+        }
+
+        let trimmedCwd = cwd?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let root = (trimmedCwd?.isEmpty == false) ? trimmedCwd! : FileManager().currentDirectoryPath
+        return URL(fileURLWithPath: root)
+            .appendingPathComponent(expanded)
+            .standardizedFileURL
+            .path
+    }
+
     static func hasEnvManipulationBeforeShellWrapper(_ argv: [String]) -> Bool {
         self.hasEnvManipulationBeforeShellWrapperInternal(
             argv,
@@ -454,6 +500,43 @@ enum ExecWrapperResolution {
 
     private static func findShellWrapperSpec(_ baseExecutable: String) -> ShellWrapperSpec? {
         self.shellWrapperSpecs.first { $0.names.contains(baseExecutable) }
+    }
+
+    private static func findShellWrapperScriptTokenIndex(_ argv: [String]) -> Int? {
+        guard argv.count >= 2 else {
+            return nil
+        }
+
+        var idx = 1
+        while idx < argv.count {
+            let token = argv[idx].trimmingCharacters(in: .whitespacesAndNewlines)
+            if token.isEmpty {
+                idx += 1
+                continue
+            }
+            let lower = token.lowercased()
+            if lower == "--" {
+                idx += 1
+                break
+            }
+            if lower == "-c" || lower == "--command" || self.isCombinedShellModeFlag(lower, flag: "c") {
+                return nil
+            }
+            if lower == "-s" || self.isCombinedShellModeFlag(lower, flag: "s") {
+                return nil
+            }
+            if self.shellWrapperOptionsWithValue.contains(lower) {
+                idx += 2
+                continue
+            }
+            if token.hasPrefix("-") || token.hasPrefix("+") {
+                idx += 1
+                continue
+            }
+            break
+        }
+
+        return idx < argv.count ? idx : nil
     }
 
     private static func extractShellWrapperPayload(_ argv: [String], spec: ShellWrapperSpec) -> String? {
@@ -627,6 +710,17 @@ enum ExecWrapperResolution {
             return nil
         }
         return commandIndex + 1
+    }
+
+    private static func isCombinedShellModeFlag(_ lowerToken: String, flag: Character) -> Bool {
+        let chars = Array(lowerToken)
+        guard chars.count >= 2, chars[0] == "-", chars[1] != "-" else {
+            return false
+        }
+        if chars.dropFirst().contains("-") {
+            return false
+        }
+        return chars.dropFirst().contains(flag)
     }
 
     private static func extractCmdInlineCommand(_ argv: [String]) -> String? {

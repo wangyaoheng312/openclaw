@@ -5,12 +5,20 @@ enum ExecAllowlistMatcher {
         guard let resolution, !entries.isEmpty else { return nil }
         let rawExecutable = resolution.rawExecutable
         let resolvedPath = resolution.resolvedPath
+        let scriptCandidatePath = resolution.scriptCandidatePath
 
         for entry in entries {
             switch ExecApprovalHelpers.validateAllowlistPattern(entry.pattern) {
             case let .valid(pattern):
-                let target = resolvedPath ?? rawExecutable
-                if self.matches(pattern: pattern, target: target) { return entry }
+                let primaryTarget = resolvedPath ?? rawExecutable
+                if self.matches(pattern: pattern, target: primaryTarget) {
+                    return entry
+                }
+                if let scriptCandidatePath,
+                   self.matches(pattern: pattern, target: scriptCandidatePath)
+                {
+                    return entry
+                }
             case .invalid:
                 continue
             }

@@ -3,8 +3,25 @@ import Foundation
 struct ExecCommandResolution {
     let rawExecutable: String
     let resolvedPath: String?
+    let scriptCandidatePath: String?
     let executableName: String
     let cwd: String?
+
+    private static let maxAllowAlwaysTraversalDepth = 2
+
+    init(
+        rawExecutable: String,
+        resolvedPath: String?,
+        scriptCandidatePath: String? = nil,
+        executableName: String,
+        cwd: String?)
+    {
+        self.rawExecutable = rawExecutable
+        self.resolvedPath = resolvedPath
+        self.scriptCandidatePath = scriptCandidatePath
+        self.executableName = executableName
+        self.cwd = cwd
+    }
 
     static func resolve(
         command: [String],
@@ -22,10 +39,18 @@ struct ExecCommandResolution {
             let normalizedToken = ExecWrapperResolution.normalizeExecutableToken(token)
             let normalizedEffective = ExecWrapperResolution.normalizeExecutableToken(effectiveRaw)
             if normalizedToken == normalizedEffective {
-                return self.resolveExecutable(rawExecutable: token, cwd: cwd, env: env)
+                let resolution = self.resolveExecutable(rawExecutable: token, cwd: cwd, env: env)
+                return self.attachingScriptCandidatePath(
+                    to: resolution,
+                    command: command,
+                    cwd: cwd)
             }
         }
-        return self.resolveExecutable(rawExecutable: effectiveRaw, cwd: cwd, env: env)
+        let resolution = self.resolveExecutable(rawExecutable: effectiveRaw, cwd: cwd, env: env)
+        return self.attachingScriptCandidatePath(
+            to: resolution,
+            command: command,
+            cwd: cwd)
     }
 
     static func resolveForAllowlist(
@@ -105,7 +130,11 @@ struct ExecCommandResolution {
         guard let raw = effective.first?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else {
             return nil
         }
-        return self.resolveExecutable(rawExecutable: raw, cwd: cwd, env: env)
+        let resolution = self.resolveExecutable(rawExecutable: raw, cwd: cwd, env: env)
+        return self.attachingScriptCandidatePath(
+            to: resolution,
+            command: command,
+            cwd: cwd)
     }
 
     private static func resolveExecutable(
@@ -162,7 +191,7 @@ struct ExecCommandResolution {
         patterns: inout [String],
         seen: inout Set<String>)
     {
-        guard depth <= ExecWrapperResolution.maxWrapperDepth, !command.isEmpty else {
+        guard depth <= Self.maxAllowAlwaysTraversalDepth, !command.isEmpty else {
             return
         }
 
@@ -226,6 +255,13 @@ struct ExecCommandResolution {
             return
         }
 
+        if let scriptCandidatePath = ExecWrapperResolution.resolveShellWrapperScriptCandidatePath(command, cwd: cwd),
+           seen.insert(scriptCandidatePath).inserted
+        {
+            patterns.append(scriptCandidatePath)
+            return
+        }
+
         guard let resolution = self.resolve(command: command, cwd: cwd, env: env),
               let pattern = ExecApprovalHelpers.allowlistPattern(command: command, resolution: resolution),
               seen.insert(pattern).inserted
@@ -233,6 +269,25 @@ struct ExecCommandResolution {
             return
         }
         patterns.append(pattern)
+    }
+
+    private static func attachingScriptCandidatePath(
+        to resolution: ExecCommandResolution?,
+        command: [String],
+        cwd: String?) -> ExecCommandResolution?
+    {
+        guard let resolution else {
+            return nil
+        }
+        guard let scriptCandidatePath = ExecWrapperResolution.resolveShellWrapperScriptCandidatePath(command, cwd: cwd) else {
+            return resolution
+        }
+        return ExecCommandResolution(
+            rawExecutable: resolution.rawExecutable,
+            resolvedPath: resolution.resolvedPath,
+            scriptCandidatePath: scriptCandidatePath,
+            executableName: resolution.executableName,
+            cwd: resolution.cwd)
     }
 
     private static func parseFirstToken(_ command: String) -> String? {

@@ -59,6 +59,18 @@ struct ExecAllowlistTests {
             cwd: nil)
     }
 
+    private static func shellScriptFixture() throws -> (dir: URL, bash: URL, script: URL) {
+        let dir = try makeTempDirForTests()
+        let bash = dir.appendingPathComponent("bash")
+        try makeExecutableForTests(at: bash)
+
+        let scriptsDir = dir.appendingPathComponent("scripts", isDirectory: true)
+        try FileManager.default.createDirectory(at: scriptsDir, withIntermediateDirectories: true)
+        let script = scriptsDir.appendingPathComponent("save_crystal.sh")
+        FileManager.default.createFile(atPath: script.path, contents: Data("echo ok\n".utf8))
+        return (dir, bash, script)
+    }
+
     @Test func `match uses resolved path`() {
         let entry = ExecAllowlistEntry(pattern: "/opt/homebrew/bin/rg")
         let resolution = Self.homebrewRGResolution()
@@ -209,6 +221,20 @@ struct ExecAllowlistTests {
             env: ["PATH": "/usr/bin:/bin"])
         #expect(resolutions.count == 1)
         #expect(resolutions[0].executableName == "sh")
+    }
+
+    @Test func `resolve for allowlist attaches shell script candidate path`() throws {
+        let fixture = try Self.shellScriptFixture()
+
+        let resolutions = ExecCommandResolution.resolveForAllowlist(
+            command: ["bash", "scripts/save_crystal.sh"],
+            rawCommand: nil,
+            cwd: fixture.dir.path,
+            env: ["PATH": "\(fixture.dir.path):/usr/bin:/bin"])
+
+        #expect(resolutions.count == 1)
+        #expect(resolutions[0].resolvedPath == fixture.bash.path)
+        #expect(resolutions[0].scriptCandidatePath == fixture.script.path)
     }
 
     @Test func `resolve for allowlist unwraps env shell wrapper chains`() {
@@ -367,6 +393,22 @@ struct ExecAllowlistTests {
         #expect(evaluation.allowlistResolutions[0].executableName == "printf")
     }
 
+    @Test func `allowlist matcher falls back to shell script candidate path`() throws {
+        let fixture = try Self.shellScriptFixture()
+
+        let resolution = ExecCommandResolution.resolveForAllowlist(
+            command: ["/usr/bin/nice", "bash", "scripts/save_crystal.sh"],
+            rawCommand: nil,
+            cwd: fixture.dir.path,
+            env: ["PATH": "\(fixture.dir.path):/usr/bin:/bin"]).first
+
+        let match = ExecAllowlistMatcher.match(
+            entries: [ExecAllowlistEntry(pattern: fixture.script.path)],
+            resolution: resolution)
+
+        #expect(match?.pattern == fixture.script.path)
+    }
+
     @Test func `allow always patterns unwrap env wrapper modifiers to the inner executable`() {
         let patterns = ExecCommandResolution.resolveAllowAlwaysPatterns(
             command: ["/usr/bin/env", "FOO=bar", "/usr/bin/printf", "ok"],
@@ -388,6 +430,30 @@ struct ExecAllowlistTests {
 
         #expect(patterns == [whoami.path])
         #expect(!patterns.contains("/usr/bin/nice"))
+    }
+
+    @Test func `allow always patterns persist shell script paths without inline commands`() throws {
+        let fixture = try Self.shellScriptFixture()
+
+        let patterns = ExecCommandResolution.resolveAllowAlwaysPatterns(
+            command: ["bash", "scripts/save_crystal.sh"],
+            cwd: fixture.dir.path,
+            env: ["PATH": "\(fixture.dir.path):/usr/bin:/bin"])
+
+        #expect(patterns == [fixture.script.path])
+        #expect(!patterns.contains(fixture.bash.path))
+    }
+
+    @Test func `allow always patterns persist shell script paths through dispatch wrappers`() throws {
+        let fixture = try Self.shellScriptFixture()
+
+        let patterns = ExecCommandResolution.resolveAllowAlwaysPatterns(
+            command: ["/usr/bin/nice", "bash", "scripts/save_crystal.sh"],
+            cwd: fixture.dir.path,
+            env: ["PATH": "\(fixture.dir.path):/usr/bin:/bin"])
+
+        #expect(patterns == [fixture.script.path])
+        #expect(!patterns.contains(fixture.bash.path))
     }
 
     @Test func `allow always patterns unwrap busybox shell applets to inner executables`() throws {
@@ -428,17 +494,17 @@ struct ExecAllowlistTests {
         #expect(patterns.isEmpty)
     }
 
-    @Test func `allow always patterns support max transparent wrapper depth`() throws {
+    @Test func `allow always patterns stop at shared transparent wrapper depth limit`() throws {
         let tmp = try makeTempDirForTests()
         let whoami = tmp.appendingPathComponent("whoami")
         try makeExecutableForTests(at: whoami)
 
         let patterns = ExecCommandResolution.resolveAllowAlwaysPatterns(
-            command: ["nice", "nohup", "timeout", "5", "stdbuf", "-o", "L", "whoami"],
+            command: ["nice", "nohup", "timeout", "5", "whoami"],
             cwd: tmp.path,
             env: ["PATH": "\(tmp.path):/usr/bin:/bin"])
 
-        #expect(patterns == [whoami.path])
+        #expect(patterns.isEmpty)
     }
 
     @Test func `match all requires every segment to match`() {
