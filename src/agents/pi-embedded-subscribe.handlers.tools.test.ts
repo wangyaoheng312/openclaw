@@ -375,7 +375,7 @@ describe("messaging tool media URL tracking", () => {
     expect(ctx.state.pendingMessagingMediaUrls.has("tool-m2")).toBe(false);
   });
 
-  it("commits mediaUrls from explicit tool result reply payload", async () => {
+  it("does not treat explicit tool result reply payload media as messaging-tool sends", async () => {
     const { ctx } = createTestContext();
 
     const startEvt: ToolExecutionStartEvent = {
@@ -402,10 +402,7 @@ describe("messaging tool media URL tracking", () => {
     };
     await handleToolExecutionEnd(ctx, endEvt);
 
-    expect(ctx.state.messagingToolSentMediaUrls).toEqual([
-      "file:///img-a.jpg",
-      "file:///img-b.jpg",
-    ]);
+    expect(ctx.state.messagingToolSentMediaUrls).toEqual([]);
   });
 
   it("trims messagingToolSentMediaUrls to 200 on commit (FIFO)", async () => {

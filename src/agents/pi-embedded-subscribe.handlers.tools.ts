@@ -1,5 +1,4 @@
 import type { AgentEvent } from "@mariozechner/pi-agent-core";
-import { resolveSendableOutboundReplyParts } from "openclaw/plugin-sdk/reply-payload";
 import { emitAgentEvent } from "../infra/agent-events.js";
 import {
   buildExecApprovalPendingReplyPayload,
@@ -270,7 +269,9 @@ async function emitToolResultOutput(params: {
     return;
   }
 
-  const explicitReplyPayload = !isToolError ? extractToolResultReplyPayload(result) : undefined;
+  const explicitReplyPayload = !isToolError
+    ? extractToolResultReplyPayload(toolName, result)
+    : undefined;
 
   if (ctx.shouldEmitToolOutput()) {
     const outputText = extractToolResultText(sanitizedResult);
@@ -504,10 +505,6 @@ export async function handleToolExecutionEnd(
   const isMessagingSend =
     pendingMediaUrls.length > 0 ||
     (isMessagingTool(toolName) && isMessagingToolSendAction(toolName, startArgs));
-  const explicitReplyPayload = !isToolError ? extractToolResultReplyPayload(result) : undefined;
-  const explicitReplyMediaUrls = explicitReplyPayload
-    ? resolveSendableOutboundReplyParts(explicitReplyPayload).mediaUrls
-    : [];
   if (!isToolError && isMessagingSend) {
     const committedMediaUrls = [
       ...pendingMediaUrls,
@@ -517,10 +514,6 @@ export async function handleToolExecutionEnd(
       ctx.state.messagingToolSentMediaUrls.push(...committedMediaUrls);
       ctx.trimMessagingToolSent();
     }
-  }
-  if (explicitReplyMediaUrls.length > 0) {
-    ctx.state.messagingToolSentMediaUrls.push(...explicitReplyMediaUrls);
-    ctx.trimMessagingToolSent();
   }
 
   // Track committed reminders only when cron.add completed successfully.

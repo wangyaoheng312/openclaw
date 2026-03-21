@@ -4,9 +4,39 @@ import { normalizeTargetForProvider } from "../infra/outbound/target-normalizati
 import { truncateUtf16Safe } from "../utils.js";
 import { collectTextContentBlocks } from "./content-blocks.js";
 import { type MessagingToolSend } from "./pi-embedded-messaging.js";
+import { normalizeToolName } from "./tool-policy.js";
 
 const TOOL_RESULT_MAX_CHARS = 8000;
 const TOOL_ERROR_MAX_CHARS = 400;
+const HTTP_URL_RE = /^https?:\/\//i;
+const TRUSTED_TOOL_RESULT_MEDIA = new Set([
+  "agents_list",
+  "apply_patch",
+  "browser",
+  "canvas",
+  "cron",
+  "edit",
+  "exec",
+  "gateway",
+  "image",
+  "image_generate",
+  "memory_get",
+  "memory_search",
+  "message",
+  "nodes",
+  "process",
+  "read",
+  "session_status",
+  "sessions_history",
+  "sessions_list",
+  "sessions_send",
+  "sessions_spawn",
+  "subagents",
+  "tts",
+  "web_fetch",
+  "web_search",
+  "write",
+]);
 
 function truncateToolText(text: string): string {
   if (text.length <= TOOL_RESULT_MAX_CHARS) {
@@ -160,18 +190,63 @@ function normalizeToolResultReplyPayload(value: unknown): ReplyPayload | undefin
   };
 }
 
-export function extractToolResultReplyPayload(result: unknown): ReplyPayload | undefined {
+function isToolResultMediaTrusted(toolName: string): boolean {
+  return TRUSTED_TOOL_RESULT_MEDIA.has(normalizeToolName(toolName));
+}
+
+function filterToolResultReplyPayloadMedia(toolName: string, payload: ReplyPayload): ReplyPayload {
+  const allowLocalPaths = isToolResultMediaTrusted(toolName);
+  const mediaUrl =
+    typeof payload.mediaUrl === "string" &&
+    (allowLocalPaths || HTTP_URL_RE.test(payload.mediaUrl.trim()))
+      ? payload.mediaUrl
+      : undefined;
+  const mediaUrls = payload.mediaUrls?.filter(
+    (url) => allowLocalPaths || HTTP_URL_RE.test(url.trim()),
+  );
+  if (
+    mediaUrl === payload.mediaUrl &&
+    mediaUrls?.length === payload.mediaUrls?.length &&
+    (payload.text || mediaUrl || mediaUrls?.length || payload.audioAsVoice || payload.channelData)
+  ) {
+    return payload;
+  }
+  return {
+    ...payload,
+    mediaUrl,
+    mediaUrls: mediaUrls?.length ? mediaUrls : undefined,
+  };
+}
+
+export function extractToolResultReplyPayload(
+  toolName: string,
+  result: unknown,
+): ReplyPayload | undefined {
   if (!result || typeof result !== "object") {
     return undefined;
   }
   const record = result as Record<string, unknown>;
-  return (
+  const payload =
     normalizeToolResultReplyPayload(record.reply) ??
     normalizeToolResultReplyPayload(
       record.details && typeof record.details === "object"
         ? (record.details as Record<string, unknown>).reply
         : undefined,
-    )
+    );
+  if (!payload) {
+    return undefined;
+  }
+  const filtered = filterToolResultReplyPayloadMedia(toolName, payload);
+  return resolveSendableToolReplyPayload(filtered) ? filtered : undefined;
+}
+
+function resolveSendableToolReplyPayload(payload: ReplyPayload): boolean {
+  return Boolean(
+    payload.text ||
+    payload.mediaUrl ||
+    payload.mediaUrls?.length ||
+    payload.audioAsVoice ||
+    payload.channelData,
   );
 }
 

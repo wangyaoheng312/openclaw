@@ -142,11 +142,41 @@ describe("handleToolExecutionEnd tool media", () => {
     });
   });
 
+  it("does not record explicit tool reply media as messaging-tool sends", async () => {
+    const ctx = createMockContext({ shouldEmitToolOutput: false });
+
+    await emitExplicitToolReply(ctx);
+
+    expect(ctx.state.messagingToolSentMediaUrls).toEqual([]);
+  });
+
   it("does not emit raw local media from tool output text", async () => {
     const onToolResult = vi.fn();
     const ctx = createMockContext({ shouldEmitToolOutput: false, onToolResult });
 
     await emitToolMediaResult(ctx, "/tmp/secret.png");
+
+    expect(onToolResult).not.toHaveBeenCalled();
+  });
+
+  it("drops local explicit reply media from untrusted tools", async () => {
+    const onToolResult = vi.fn();
+    const ctx = createMockContext({ shouldEmitToolOutput: false, onToolResult });
+
+    await handleToolExecutionEnd(ctx, {
+      type: "tool_execution_end",
+      toolName: "third_party_plugin",
+      toolCallId: "tc-untrusted",
+      isError: false,
+      result: {
+        content: [{ type: "text", text: "Generated 1 file." }],
+        details: {
+          reply: {
+            mediaUrls: ["/tmp/secret.png"],
+          },
+        },
+      },
+    });
 
     expect(onToolResult).not.toHaveBeenCalled();
   });
