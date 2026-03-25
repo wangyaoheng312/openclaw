@@ -10,6 +10,8 @@ Docs: https://docs.openclaw.ai
 
 ### Fixes
 
+- Gateway/auth: make local-direct `trusted-proxy` fallback require the configured shared token instead of silently authenticating same-host callers, while keeping same-host reverse proxy identity-header flows on the normal trusted-proxy path. Thanks @zhangning-agent and @vincentkoc.
+
 ## 2026.3.23
 
 ### Breaking
