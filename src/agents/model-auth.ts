@@ -1,7 +1,7 @@
 import path from "node:path";
 import { type Api, type Model } from "@mariozechner/pi-ai";
 import { formatCliCommand } from "../cli/command-format.js";
-import type { OpenClawConfig } from "../config/config.js";
+import { getRuntimeConfigSnapshot, type OpenClawConfig } from "../config/config.js";
 import type { ModelProviderAuthMode, ModelProviderConfig } from "../config/types.js";
 import { coerceSecretRef } from "../config/types.secrets.js";
 import { getShellEnvAppliedKeys } from "../infra/shell-env.js";
@@ -26,6 +26,7 @@ import {
   CUSTOM_LOCAL_AUTH_MARKER,
   isKnownEnvApiKeyMarker,
   isNonSecretApiKeyMarker,
+  resolveNonEnvSecretRefApiKeyMarker,
 } from "./model-auth-markers.js";
 import {
   requireApiKey,
@@ -189,10 +190,117 @@ function isCustomLocalProviderConfig(providerConfig: ModelProviderConfig): boole
   );
 }
 
+function readConfiguredOrManagedApiKey(value: unknown): string | undefined {
+  const literal = normalizeOptionalSecretInput(value);
+  if (literal) {
+    return literal;
+  }
+  const ref = coerceSecretRef(value);
+  return ref ? resolveNonEnvSecretRefApiKeyMarker(ref.source) : undefined;
+}
+
+function readLegacyGrokFallbackAuth(
+  config: OpenClawConfig | undefined,
+): { apiKey: string; source: string } | undefined {
+  const apiKey = readConfiguredOrManagedApiKey(config?.tools?.web?.search?.grok?.apiKey);
+  return apiKey ? { apiKey, source: "tools.web.search.grok.apiKey" } : undefined;
+}
+
+function readXaiConfigBackedAuth(
+  config: OpenClawConfig | undefined,
+): { apiKey: string; source: string } | undefined {
+  const pluginConfig = config?.plugins?.entries?.xai?.config as
+    | { webSearch?: { apiKey?: unknown } }
+    | undefined;
+  const pluginApiKey = readConfiguredOrManagedApiKey(pluginConfig?.webSearch?.apiKey);
+  if (pluginApiKey) {
+    return {
+      apiKey: pluginApiKey,
+      source: "plugins.entries.xai.config.webSearch.apiKey",
+    };
+  }
+  return readLegacyGrokFallbackAuth(config);
+}
+
+function resolveXaiConfigBackedRuntimeAuth(params: {
+  cfg: OpenClawConfig | undefined;
+}): ResolvedProviderAuth | undefined {
+  const directAuth = readXaiConfigBackedAuth(params.cfg);
+  if (directAuth && !isNonSecretApiKeyMarker(directAuth.apiKey)) {
+    return {
+      apiKey: directAuth.apiKey,
+      source: directAuth.source,
+      mode: "api-key",
+    };
+  }
+
+  const runtimeConfig = getRuntimeConfigSnapshot();
+  if (!runtimeConfig || runtimeConfig === params.cfg) {
+    return undefined;
+  }
+
+  const runtimeAuth = readXaiConfigBackedAuth(runtimeConfig);
+  if (!runtimeAuth || isNonSecretApiKeyMarker(runtimeAuth.apiKey)) {
+    return undefined;
+  }
+  return {
+    apiKey: runtimeAuth.apiKey,
+    source: runtimeAuth.source,
+    mode: "api-key",
+  };
+}
+
 function resolveSyntheticLocalProviderAuth(params: {
   cfg: OpenClawConfig | undefined;
   provider: string;
 }): ResolvedProviderAuth | null {
+  if (normalizeProviderId(params.provider) === "xai") {
+    const xaiConfigBackedAuth = resolveXaiConfigBackedRuntimeAuth({
+      cfg: params.cfg,
+    });
+    if (xaiConfigBackedAuth) {
+      return xaiConfigBackedAuth;
+    }
+  }
+
+  const tryPluginSyntheticAuth = (
+    config: OpenClawConfig | undefined,
+  ): ResolvedProviderAuth | undefined => {
+    const providerConfig = resolveProviderConfig(config, params.provider);
+    const syntheticAuth = resolveProviderSyntheticAuthWithPlugin({
+      provider: params.provider,
+      config,
+      context: {
+        config,
+        provider: params.provider,
+        providerConfig,
+      },
+    });
+    if (
+      syntheticAuth &&
+      !(
+        normalizeProviderId(params.provider) === "xai" &&
+        isNonSecretApiKeyMarker(syntheticAuth.apiKey)
+      )
+    ) {
+      return syntheticAuth;
+    }
+    return undefined;
+  };
+
+  const directPluginSyntheticAuth = tryPluginSyntheticAuth(params.cfg);
+  if (directPluginSyntheticAuth) {
+    return directPluginSyntheticAuth;
+  }
+
+  const runtimeConfig = getRuntimeConfigSnapshot();
+  if (runtimeConfig && runtimeConfig !== params.cfg) {
+    const runtimePluginSyntheticAuth = tryPluginSyntheticAuth(runtimeConfig);
+    if (runtimePluginSyntheticAuth) {
+      return runtimePluginSyntheticAuth;
+    }
+  }
+
   const providerConfig = resolveProviderConfig(params.cfg, params.provider);
   if (!providerConfig) {
     return null;
@@ -204,19 +312,6 @@ function resolveSyntheticLocalProviderAuth(params: {
     (Array.isArray(providerConfig.models) && providerConfig.models.length > 0);
   if (!hasApiConfig) {
     return null;
-  }
-
-  const pluginSyntheticAuth = resolveProviderSyntheticAuthWithPlugin({
-    provider: params.provider,
-    config: params.cfg,
-    context: {
-      config: params.cfg,
-      provider: params.provider,
-      providerConfig,
-    },
-  });
-  if (pluginSyntheticAuth) {
-    return pluginSyntheticAuth;
   }
 
   const authOverride = resolveProviderAuthOverride(params.cfg, params.provider);
